@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stock Sentiment</title>
+<style>
+  /* Colours live in one place. Dark mode just swaps the values. */
+  :root {
+    --bg: #fcfcfb; --card: #ffffff; --ink: #1a1a19; --muted: #6b6b68; --grid: #e6e6e3;
+    --pos: #2a78d6; --neg: #e34948;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #1a1a19; --card: #232322; --ink: #f2f2f0; --muted: #a0a09b; --grid: #343430;
+      --pos: #3987e5; --neg: #e66767;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #1a1a19; --card: #232322; --ink: #f2f2f0; --muted: #a0a09b; --grid: #343430;
+    --pos: #3987e5; --neg: #e66767;
+  }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 20px; margin: 8px 0 12px; }
+  .card { background: var(--card); border: 1px solid var(--grid); border-radius: 10px; padding: 12px; margin-bottom: 12px; }
+
+  .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  input, button { font: inherit; color: var(--ink); background: var(--card);
+                  border: 1px solid var(--grid); border-radius: 6px; padding: 6px 10px; }
+  input { width: 100px; text-transform: uppercase; }
+  button { cursor: pointer; }
+  button[aria-pressed="true"] { border-color: var(--pos); color: var(--pos); font-weight: 600; }
+
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin-bottom: 12px; }
+  .kpi { background: var(--card); border: 1px solid var(--grid); border-radius: 10px; padding: 10px; }
+  .kpi .label { color: var(--muted); font-size: 12px; }
+  .kpi .value { font-size: 20px; font-weight: 600; }
+
+  #charts { position: relative; transition: opacity .15s; }
+  #charts.loading { opacity: .5; }
+  .caption { color: var(--muted); font-size: 12px; margin: 4px 0 2px; }
+  svg { display: block; width: 100%; }
+  svg text { fill: var(--muted); font-size: 11px; }
+  .gridline { stroke: var(--grid); stroke-width: 1; }
+  #tip { position: absolute; pointer-events: none; display: none; background: var(--card);
+         border: 1px solid var(--grid); border-radius: 6px; padding: 6px 8px; font-size: 12px;
+         box-shadow: 0 2px 8px rgba(0,0,0,.15); white-space: nowrap; }
+
+  #error { color: var(--neg); margin: 8px 0; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li { padding: 8px 0; border-top: 1px solid var(--grid); }
+  li:first-child { border-top: 0; }
+  .meta { color: var(--muted); font-size: 12px; }
+  a { color: var(--ink); }
+  .note { color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Stock Sentiment</h1>
+
+  <div class="card filters">
+    <input id="ticker" value="AAPL" aria-label="Ticker symbol" maxlength="12">
+    <span id="periods"></span>
+    <button id="go">Analyze</button>
+  </div>
+
+  <div id="error" role="alert"></div>
+  <div class="kpis" id="kpis"></div>
+
+  <div class="card" id="charts">
+    <div class="caption">Closing price</div>
+    <svg id="priceChart" role="img" aria-label="Closing price over time"></svg>
+    <div class="caption">Daily average headline sentiment (−1 negative to +1 positive)</div>
+    <svg id="sentChart" role="img" aria-label="Daily average sentiment"></svg>
+    <div id="tip"></div>
+  </div>
+
+  <div class="card">
+    <ul id="headlines"></ul>
+  </div>
+
+  <p class="note">
+    Sentiment history builds up as the app is used (Yahoo only returns the latest headlines).
+    The model was trained on movie reviews, so it can misjudge financial headlines.
+    Not financial advice.
+  </p>
+</main>
+
+<script>
+const PERIODS = ["5d", "1mo", "3mo", "6mo", "1y"];
+let period = "1mo";
+let data = null;
+
+const $ = (id) => document.getElementById(id);
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const NS = "http://www.w3.org/2000/svg";
+
+// Create an SVG element with attributes in one line.
+function svg(tag, attrs = {}, text) {
+  const el = document.createElementNS(NS, tag);
+  for (const k in attrs) el.setAttribute(k, attrs[k]);
+  if (text !== undefined) el.textContent = text;
+  return el;
+}
+
+/* ---------- period buttons ---------- */
+function renderPeriods() {
+  $("periods").replaceChildren(...PERIODS.map((p) => {
+    const b = document.createElement("button");
+    b.textContent = p;
+    b.setAttribute("aria-pressed", p === period);
+    b.onclick = () => { period = p; renderPeriods(); load(); };
+    return b;
+  }));
+}
+
+/* ---------- fetch ---------- */
+let requestId = 0;   // lets us ignore a slow response that arrives after a newer request
+
+async function load() {
+  const ticker = $("ticker").value.trim();
+  if (!ticker) return;
+  const mine = ++requestId;
+  $("error").textContent = "";
+  $("charts").classList.add("loading");     // keep the old chart, just dim it
+  try {
+    const res = await fetch(`/api/analyze/${encodeURIComponent(ticker)}?period=${period}`);
+    const body = await res.json().catch(() => ({}));
+    if (mine !== requestId) return;          // a newer request has started; drop this one
+    if (!res.ok) throw new Error(body.detail || "Request failed");
+    data = body;
+    render();
+  } catch (e) {
+    if (mine === requestId) $("error").textContent = e.message;
+  } finally {
+    if (mine === requestId) $("charts").classList.remove("loading");
+  }
+}
+
+/* ---------- KPI tiles ---------- */
+function kpi(label, value) {
+  const d = document.createElement("div");
+  d.className = "kpi";
+  const l = document.createElement("div"); l.className = "label"; l.textContent = label;
+  const v = document.createElement("div"); v.className = "value"; v.textContent = value;
+  d.append(l, v);
+  return d;
+}
+
+function renderKpis() {
+  const p = data.prices, s = data.summary;
+  const last = p[p.length - 1].close, first = p[0].close;
+  const pct = ((last - first) / first) * 100;
+  const arrow = pct >= 0 ? "▲" : "▼";   // arrow + sign, so colour isn't the only signal
+  $("kpis").replaceChildren(
+    kpi("Latest price", `$${last.toFixed(2)}`),
+    kpi(`Change (${data.period})`, `${arrow} ${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`),
+    kpi("Mean sentiment", s.mean_score.toFixed(2)),
+    kpi("Headlines", s.headline_count),
+    kpi("Pos / Neutral / Neg", `${s.positive} / ${s.neutral} / ${s.negative}`),
+  );
+}
+
+/* ---------- charts ---------- */
+const M = { left: 48, right: 12 };   // margins shared by both charts so the x axes line up
+
+function renderCharts() {
+  const W = $("charts").clientWidth - 24;       // card padding
+  const days = (d) => new Date(d + "T00:00:00Z").getTime();
+  // Every date we can show: trading days plus any headline-only days (e.g. weekends).
+  const allDates = [...new Set([...data.prices.map((p) => p.date), ...data.daily_sentiment.map((d) => d.date)])].sort();
+  data._dates = allDates;
+  const t0 = days(allDates[0]), t1 = days(allDates[allDates.length - 1]);
+  const plotW = W - M.left - M.right;
+  // One x scale for BOTH charts: date -> pixel.
+  const x = (d) => M.left + (t1 === t0 ? plotW / 2 : ((days(d) - t0) / (t1 - t0)) * plotW);
+  data._x = x; data._W = W;
+
+  drawPrice(W, x);
+  drawSentiment(W, x);
+}
+
+function drawPrice(W, x) {
+  const H = 190, top = 12, bottom = 26, el = $("priceChart");
+  el.setAttribute("viewBox", `0 0 ${W} ${H}`); el.setAttribute("height", H);
+  el.replaceChildren();
+
+  const closes = data.prices.map((p) => p.close);
+  let lo = Math.min(...closes), hi = Math.max(...closes);
+  const pad = (hi - lo) * 0.1 || 1; lo -= pad; hi += pad;
+  const y = (v) => top + (1 - (v - lo) / (hi - lo)) * (H - top - bottom);
+
+  for (let i = 0; i <= 3; i++) {                // 4 gridlines with labels
+    const v = lo + ((hi - lo) * i) / 3, yy = y(v);
+    el.append(svg("line", { x1: M.left, x2: W - M.right, y1: yy, y2: yy, class: "gridline" }));
+    el.append(svg("text", { x: M.left - 6, y: yy + 4, "text-anchor": "end" }, v.toFixed(0)));
+  }
+
+  const pts = data.prices.map((p) => [x(p.date), y(p.close)]);
+  const line = pts.map((p, i) => `${i ? "L" : "M"}${p[0]},${p[1]}`).join(" ");
+  const base = H - bottom;
+  el.append(svg("path", { d: `${line} L${pts[pts.length - 1][0]},${base} L${pts[0][0]},${base} Z`,
+                          fill: css("--pos"), "fill-opacity": 0.1 }));
+  el.append(svg("path", { d: line, fill: "none", stroke: css("--pos"), "stroke-width": 2 }));
+
+  const [lx, ly] = pts[pts.length - 1];         // labelled end point
+  el.append(svg("circle", { cx: lx, cy: ly, r: 4, fill: css("--pos") }));
+  el.append(svg("text", { x: lx, y: ly - 8, "text-anchor": "end" }, `$${closes[closes.length - 1].toFixed(2)}`));
+
+  const cross = svg("line", { id: "cross1", y1: top, y2: base, stroke: css("--muted"), "stroke-width": 1, visibility: "hidden" });
+  el.append(cross);
+}
+
+function drawSentiment(W, x) {
+  const H = 130, top = 8, bottom = 24, el = $("sentChart");
+  el.setAttribute("viewBox", `0 0 ${W} ${H}`); el.setAttribute("height", H);
+  el.replaceChildren();
+
+  const y = (v) => top + (1 - (v + 1) / 2) * (H - top - bottom);   // score -1..1 -> pixel
+  [1, 0, -1].forEach((v) => {
+    el.append(svg("line", { x1: M.left, x2: W - M.right, y1: y(v), y2: y(v), class: "gridline" }));
+    el.append(svg("text", { x: M.left - 6, y: y(v) + 4, "text-anchor": "end" }, v > 0 ? "+1" : String(v)));
+  });
+
+  const slot = (W - M.left - M.right) / data._dates.length;
+  const bw = Math.max(4, Math.min(24, slot - 2));
+  data.daily_sentiment.forEach((d) => {
+    const cx = x(d.date), v = d.avg_score, y0 = y(0), y1 = y(v);
+    el.append(svg("rect", {
+      id: "bar-" + d.date, x: cx - bw / 2, width: bw,
+      y: Math.min(y0, y1), height: Math.max(1, Math.abs(y1 - y0)),
+      rx: 2, fill: v >= 0 ? css("--pos") : css("--neg"),
+    }));
+  });
+
+  if (!data.daily_sentiment.length) {
+    el.append(svg("text", { x: (W + M.left) / 2, y: y(0) - 8, "text-anchor": "middle" },
+                  "No headlines stored for this period yet"));
+  }
+
+  // x-axis date labels (first, middle, last)
+  const ds = data._dates;
+  [0, Math.floor((ds.length - 1) / 2), ds.length - 1].forEach((i, k) => {
+    el.append(svg("text", { x: x(ds[i]), y: H - 6, "text-anchor": k === 0 ? "start" : k === 2 ? "end" : "middle" }, ds[i]));
+  });
+
+  el.append(svg("line", { id: "cross2", y1: top, y2: H - bottom, stroke: css("--muted"), "stroke-width": 1, visibility: "hidden" }));
+}
+
+/* ---------- hover: snap to the nearest date ---------- */
+function onMove(evt) {
+  if (!data) return;
+  const box = $("charts").getBoundingClientRect();
+  const mx = evt.clientX - box.left - 12;
+  let bestDate = data._dates[0], bestDist = Infinity;
+  for (const d of data._dates) {
+    const dist = Math.abs(data._x(d) - mx);
+    if (dist < bestDist) { bestDate = d; bestDist = dist; }
+  }
+  const best = { date: bestDate, close: (data.prices.find((p) => p.date === bestDate) || {}).close };
+  const cx = data._x(best.date);
+  for (const id of ["cross1", "cross2"]) {
+    const c = $(id); c.setAttribute("x1", cx); c.setAttribute("x2", cx); c.setAttribute("visibility", "visible");
+  }
+  document.querySelectorAll("#sentChart rect").forEach((r) => r.setAttribute("opacity", 0.45));
+  const bar = $("bar-" + best.date);
+  if (bar) bar.setAttribute("opacity", 1);
+
+  const s = data.daily_sentiment.find((d) => d.date === best.date);
+  const tip = $("tip");
+  tip.textContent = `${best.date} · ${best.close === undefined ? "market closed" : "$" + best.close.toFixed(2)} · ` +
+    (s ? `sentiment ${s.avg_score >= 0 ? "+" : ""}${s.avg_score.toFixed(2)} (${s.count})` : "no headlines");
+  tip.style.display = "block";
+  tip.style.left = Math.min(cx + 20, box.width - tip.offsetWidth - 4) + "px";
+  tip.style.top = "8px";
+}
+function onLeave() {
+  $("tip").style.display = "none";
+  for (const id of ["cross1", "cross2"]) { const c = $(id); if (c) c.setAttribute("visibility", "hidden"); }
+  document.querySelectorAll("#sentChart rect").forEach((r) => r.removeAttribute("opacity"));
+}
+
+/* ---------- headlines ---------- */
+const ICON = { positive: "▲", neutral: "●", negative: "▼" };
+
+function renderHeadlines() {
+  const items = [...data.articles].sort((a, b) => (b.published_at || "").localeCompare(a.published_at || ""));
+  $("headlines").replaceChildren(...items.map((a) => {
+    const li = document.createElement("li");
+    const top = document.createElement("div");
+    top.textContent = `${ICON[a.label]} ${a.label} (${a.score >= 0 ? "+" : ""}${a.score.toFixed(2)}) `;
+
+    let title;
+    if (/^https?:\/\//i.test(a.link || "")) {      // only http(s) links; headlines are untrusted
+      title = document.createElement("a");
+      title.href = a.link; title.target = "_blank"; title.rel = "noopener";
+    } else {
+      title = document.createElement("span");
+    }
+    title.textContent = a.title;
+    top.append(title);
+
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.textContent = `${a.publisher} · ${(a.published_at || "").slice(0, 10)}`;
+    li.append(top, meta);
+    return li;
+  }));
+}
+
+function render() { renderKpis(); renderCharts(); renderHeadlines(); }
+
+$("go").onclick = load;
+$("ticker").addEventListener("keydown", (e) => { if (e.key === "Enter") load(); });
+$("charts").addEventListener("mousemove", onMove);
+$("charts").addEventListener("mouseleave", onLeave);
+window.addEventListener("resize", () => data && renderCharts());
+renderPeriods();
+load();
+</script>
+</body>
+</html>
