@@ -2,7 +2,7 @@
 
 Pulls recent news headlines for a stock, scores each one with a sentiment model I trained on finance text, and lines the daily sentiment up against the price chart.
 
-> **Status:** backend, model, dashboard and tests work locally. Deployment is in progress.
+**Live demo:** https://stock-sentiment-01zz.onrender.com (free tier: the first load after idle takes about a minute to wake, and stored headline history resets whenever the service restarts)
 
 ## How it works
 
