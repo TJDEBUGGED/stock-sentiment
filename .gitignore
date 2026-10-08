@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.env
+venv/
+.venv/
+sentiment.db
+.pytest_cache/
+.DS_Store
+
+# Downloaded datasets (re-created by train_finance.py; PhraseBank is non-commercial licensed)
+data/raw/
+# Local model experiments
+model/movie_baseline/
+model_twitter_only/
+eval/__pycache__/
