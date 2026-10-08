@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: stock-sentiment
+    runtime: python
+    plan: free
+    # Train at build time so the pickled model matches the library versions installed here.
+    buildCommand: pip install -r requirements.txt && python train_finance.py
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
