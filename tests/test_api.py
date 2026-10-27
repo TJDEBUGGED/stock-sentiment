@@ -62,4 +62,5 @@ def test_upstream_failure_becomes_502(monkeypatch):
 
     monkeypatch.setattr(main, "analyze_ticker", boom)
     r = client.get("/api/analyze/AAPL")
-    assert r.status_code == 502 and "yahoo down" in r.json()["detail"]
+    assert r.status_code == 502
+    assert "yahoo down" not in r.json()["detail"]    # internal error text must not leak to clients

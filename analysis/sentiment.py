@@ -19,11 +19,23 @@ class SentimentScorer:
             self.model = pickle.load(f)
 
     def score(self, text: str) -> dict:
-        X = self.vectorizer.transform([text])
-        probs = dict(zip(self.model.classes_, self.model.predict_proba(X)[0]))
-        signed = float(probs["positive"] - probs["negative"])
+        """Score one text. Returns only {score, label}: this is what gets stored per headline."""
+        full = self.score_many([text])[0]
+        return {"score": full["score"], "label": full["label"]}
 
-        # The model has a real neutral class, so the label is the most likely class.
-        label = max(probs, key=probs.get)
-
-        return {"score": round(signed, 4), "label": str(label)}
+    def score_many(self, texts: list[str]) -> list[dict]:
+        """Score a batch in one vectorizer/model call. Also returns the class probabilities."""
+        X = self.vectorizer.transform(texts)
+        classes = [str(c) for c in self.model.classes_]
+        results = []
+        for row in self.model.predict_proba(X):
+            probs = dict(zip(classes, (float(p) for p in row)))
+            signed = probs["positive"] - probs["negative"]
+            # The model has a real neutral class, so the label is the most likely class.
+            label = max(probs, key=probs.get)
+            results.append({
+                "label": label,
+                "score": round(signed, 4),
+                "probabilities": {k: round(v, 4) for k, v in probs.items()},
+            })
+        return results
