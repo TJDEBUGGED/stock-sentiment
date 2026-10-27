@@ -9,7 +9,13 @@ import sys
 import yfinance as yf
 from datetime import datetime, timezone
 
+from data.cache import ttl_cache
 
+NEWS_TTL = 600     # seconds: headlines change slowly
+PRICE_TTL = 300    # seconds
+
+
+@ttl_cache(NEWS_TTL)
 def get_news(ticker: str, count: int = 10) -> list[dict]:
     """
     Fetch recent news headlines for a ticker.
@@ -48,6 +54,7 @@ def get_news(ticker: str, count: int = 10) -> list[dict]:
     return articles
 
 
+@ttl_cache(PRICE_TTL)
 def get_price_history(ticker: str, period: str = "1mo") -> list[dict]:
     """
     Fetch daily price history for a ticker.

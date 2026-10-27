@@ -6,13 +6,16 @@ analyze_ticker() returns one JSON-friendly dict the API and dashboard consume:
   articles         every stored headline for the ticker, with its sentiment
   daily_sentiment  average sentiment per day (the line plotted against price)
   summary          overall mean score + positive/neutral/negative counts
+  warnings         non-fatal problems, e.g. "could not fetch new headlines" (prices still returned)
 """
 
+import logging
 from collections import defaultdict
 
 from data import fetcher, store
 from analysis.sentiment import SentimentScorer
 
+log = logging.getLogger("stock-sentiment")
 _scorer = None
 
 
@@ -61,12 +64,21 @@ def analyze_ticker(
 ) -> dict:
     ticker = ticker.upper().strip()
     scorer = scorer or get_scorer()
+    warnings = []
 
     # 1. Fetch fresh headlines, score them, and save (duplicates are ignored).
-    fresh = score_articles(get_news(ticker), scorer)
+    #    If the news fetch fails we still show prices and the history we already stored.
+    try:
+        raw_news = get_news(ticker)
+    except Exception:
+        log.warning("news fetch failed for %s", ticker, exc_info=True)
+        raw_news = []
+        warnings.append("Could not fetch new headlines right now; showing stored history only.")
+    fresh = score_articles(raw_news, scorer)
     store.save_headlines(ticker, fresh, db_path)
 
     # 2. Read back everything stored so far, so history accumulates over time.
+    #    Prices are required: if this fails, the error propagates (the API turns it into a 502).
     prices = get_prices(ticker, period)
     articles = store.load_headlines(ticker, db_path)
 
@@ -83,4 +95,5 @@ def analyze_ticker(
         "articles": articles,
         "daily_sentiment": daily_average(articles),
         "summary": summarize(articles),
+        "warnings": warnings,
     }

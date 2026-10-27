@@ -3,6 +3,8 @@ Tests for analysis/pipeline.py. No network, no real model: the pipeline accepts
 fake get_news / get_prices / scorer / db_path, so everything here is deterministic.
 """
 
+import pytest
+
 from analysis.pipeline import analyze_ticker, daily_average, summarize
 
 
@@ -117,6 +119,32 @@ def test_period_filter_drops_headlines_before_the_first_price_date(tmp_path):
 def test_weekend_headline_after_last_price_is_kept(tmp_path):
     result = run(tmp_path, [article("w", "good weekend", "2026-10-04T10:00:00+00:00")])
     assert [d["date"] for d in result["daily_sentiment"]] == ["2026-10-04"]
+
+
+def test_no_warnings_on_a_normal_run(tmp_path):
+    assert run(tmp_path, [article("a", "good news", "2026-10-02T10:00:00+00:00")])["warnings"] == []
+
+
+def test_news_failure_still_returns_prices_and_stored_history(tmp_path):
+    run(tmp_path, [article("a", "good news", "2026-10-02T10:00:00+00:00")])    # builds some history
+
+    def broken_news(_ticker):
+        raise RuntimeError("yahoo search down")
+
+    result = analyze_ticker("aapl", "5d", get_news=broken_news, get_prices=lambda t, p: PRICES,
+                            db_path=tmp_path / "test.db", scorer=FakeScorer())
+    assert result["prices"] == PRICES                                  # prices still shown
+    assert result["summary"]["headline_count"] == 1                    # stored history still shown
+    assert len(result["warnings"]) == 1 and "headlines" in result["warnings"][0]
+
+
+def test_price_failure_is_not_swallowed(tmp_path):
+    def broken_prices(_ticker, _period):
+        raise RuntimeError("no prices")
+
+    with pytest.raises(RuntimeError):
+        analyze_ticker("aapl", "5d", get_news=lambda t: [], get_prices=broken_prices,
+                       db_path=tmp_path / "test.db", scorer=FakeScorer())
 
 
 def test_headlines_are_kept_per_ticker(tmp_path):

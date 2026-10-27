@@ -73,6 +73,9 @@
 
   #error { color: var(--down); margin: 0 0 10px; font: 12px var(--mono); }
   #error:empty { display: none; }
+  #notice { color: var(--muted); margin: 0 0 10px; font: 12px var(--mono); }
+  #notice:empty { display: none; }
+  #notice::before { content: "! "; color: var(--faint); }
 
   /* Headline feed */
   ul { list-style: none; margin: 0; padding: 0; }
@@ -110,6 +113,7 @@
   </div>
 
   <div id="error" role="alert"></div>
+  <div id="notice" role="status"></div>
   <div class="stats" id="kpis"></div>
 
   <div class="panel" id="charts">
@@ -398,7 +402,10 @@ function renderHeadlines() {
   }));
 }
 
-function render() { renderKpis(); renderCharts(); renderHeadlines(); }
+function render() {
+  $("notice").textContent = (data.warnings || []).join(" ");   // non-fatal problems from the API
+  renderKpis(); renderCharts(); renderHeadlines();
+}
 
 $("go").onclick = load;
 $("ticker").addEventListener("keydown", (e) => { if (e.key === "Enter") load(); });
